@@ -1,90 +1,188 @@
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use argh::FromArgs;
 
-#[derive(Parser)]
-#[command(
-  name = "hime-tools",
-  about = "Tools for translating games using NVS/FVP visual novel engine"
-)]
+/// Tools for translating games using NVS/FVP visual novel engine
+#[derive(FromArgs)]
 pub struct Cli {
-  #[command(subcommand)]
+  #[argh(subcommand)]
   pub command: Command,
 }
 
-#[derive(Subcommand)]
+#[derive(FromArgs)]
+#[argh(subcommand)]
 pub enum Command {
-  Bin {
-    #[command(subcommand)]
-    action: BinAction,
-  },
-  Nvsg {
-    #[command(subcommand)]
-    action: NvsgAction,
-  },
-  Hcb {
-    #[command(subcommand)]
-    action: HcbAction,
-  },
+  Bin(BinCommand),
+  Nvsg(NvsgCommand),
+  Hcb(HcbCommand),
 }
 
-#[derive(Subcommand)]
+/// Packed archive operations
+#[derive(FromArgs)]
+#[argh(subcommand, name = "bin")]
+pub struct BinCommand {
+  #[argh(subcommand)]
+  pub action: BinAction,
+}
+
+/// NVSG image operations
+#[derive(FromArgs)]
+#[argh(subcommand, name = "nvsg")]
+pub struct NvsgCommand {
+  #[argh(subcommand)]
+  pub action: NvsgAction,
+}
+
+/// HCB bytecode operations
+#[derive(FromArgs)]
+#[argh(subcommand, name = "hcb")]
+pub struct HcbCommand {
+  #[argh(subcommand)]
+  pub action: HcbAction,
+}
+
+#[derive(FromArgs)]
+#[argh(subcommand)]
 pub enum BinAction {
-  Ls {
-    archive: PathBuf,
-  },
-  Get {
-    archive: PathBuf,
-    name: String,
-    output: Option<PathBuf>,
-  },
-  Pack {
-    input_folder: PathBuf,
-    output: PathBuf,
-  },
-  Unpack {
-    archive: PathBuf,
-    output_folder: PathBuf,
-  },
-  Validate {
-    archive: PathBuf,
-  },
-  Replace {
-    archive: PathBuf,
-    name: String,
-    file: PathBuf,
-  },
+  Ls(BinLs),
+  Get(BinGet),
+  Pack(BinPack),
+  Unpack(BinUnpack),
+  Validate(BinValidate),
+  Replace(BinReplace),
 }
 
-#[derive(Subcommand)]
+/// List archive contents
+#[derive(FromArgs)]
+#[argh(subcommand, name = "ls")]
+pub struct BinLs {
+  #[argh(positional)]
+  pub archive: PathBuf,
+}
+
+/// Extract a single file from archive
+#[derive(FromArgs)]
+#[argh(subcommand, name = "get")]
+pub struct BinGet {
+  #[argh(positional)]
+  pub archive: PathBuf,
+  #[argh(positional)]
+  pub name: String,
+  #[argh(positional)]
+  pub output: Option<PathBuf>,
+}
+
+/// Pack a folder into an archive
+#[derive(FromArgs)]
+#[argh(subcommand, name = "pack")]
+pub struct BinPack {
+  #[argh(positional)]
+  pub input_folder: PathBuf,
+  #[argh(positional)]
+  pub output: PathBuf,
+}
+
+/// Unpack an archive into a folder
+#[derive(FromArgs)]
+#[argh(subcommand, name = "unpack")]
+pub struct BinUnpack {
+  #[argh(positional)]
+  pub archive: PathBuf,
+  #[argh(positional)]
+  pub output_folder: PathBuf,
+}
+
+/// Validate archive integrity
+#[derive(FromArgs)]
+#[argh(subcommand, name = "validate")]
+pub struct BinValidate {
+  #[argh(positional)]
+  pub archive: PathBuf,
+}
+
+/// Replace a file in an archive
+#[derive(FromArgs)]
+#[argh(subcommand, name = "replace")]
+pub struct BinReplace {
+  #[argh(positional)]
+  pub archive: PathBuf,
+  #[argh(positional)]
+  pub name: String,
+  #[argh(positional)]
+  pub file: PathBuf,
+}
+
+#[derive(FromArgs)]
+#[argh(subcommand)]
 pub enum HcbAction {
-  Disasm { input: PathBuf, output: PathBuf },
-  Asm { input: PathBuf, output: PathBuf },
+  Disasm(HcbDisasm),
+  Asm(HcbAsm),
 }
 
-#[derive(Subcommand)]
+/// Disassemble HCB bytecode
+#[derive(FromArgs)]
+#[argh(subcommand, name = "disasm")]
+pub struct HcbDisasm {
+  #[argh(positional)]
+  pub input: PathBuf,
+  #[argh(positional)]
+  pub output: PathBuf,
+}
+
+/// Assemble HCB bytecode
+#[derive(FromArgs)]
+#[argh(subcommand, name = "asm")]
+pub struct HcbAsm {
+  #[argh(positional)]
+  pub input: PathBuf,
+  #[argh(positional)]
+  pub output: PathBuf,
+}
+
+#[derive(FromArgs)]
+#[argh(subcommand)]
 pub enum NvsgAction {
-  Info {
-    input: PathBuf,
-  },
-  Decode {
-    input: PathBuf,
-    output: Option<PathBuf>,
-  },
-  Encode {
-    input: PathBuf,
-    output: PathBuf,
-    #[arg(short = 'x', default_value_t = 0)]
-    offset_x: u16,
-    #[arg(short = 'y', default_value_t = 0)]
-    offset_y: u16,
-    #[arg(short = 'u', default_value_t = 0)]
-    anchor_x: u16,
-    #[arg(short = 'v', default_value_t = 0)]
-    anchor_y: u16,
-    #[arg(long = "type")]
-    image_type: Option<u16>,
-    #[arg(long = "parts", default_value_t = 0)]
-    parts_count: u16,
-  },
+  Info(NvsgInfo),
+  Decode(NvsgDecode),
+  Encode(NvsgEncode),
+}
+
+/// Show NVSG image info
+#[derive(FromArgs)]
+#[argh(subcommand, name = "info")]
+pub struct NvsgInfo {
+  #[argh(positional)]
+  pub input: PathBuf,
+}
+
+/// Decode NVSG image to PNG
+#[derive(FromArgs)]
+#[argh(subcommand, name = "decode")]
+pub struct NvsgDecode {
+  #[argh(positional)]
+  pub input: PathBuf,
+  #[argh(positional)]
+  pub output: Option<PathBuf>,
+}
+
+/// Encode PNG to NVSG image
+#[derive(FromArgs)]
+#[argh(subcommand, name = "encode")]
+pub struct NvsgEncode {
+  #[argh(positional)]
+  pub input: PathBuf,
+  #[argh(positional)]
+  pub output: PathBuf,
+  #[argh(option, short = 'x', default = "0", description = "horizontal offset")]
+  pub offset_x: u16,
+  #[argh(option, short = 'y', default = "0", description = "vertical offset")]
+  pub offset_y: u16,
+  #[argh(option, short = 'u', default = "0", description = "horizontal anchor")]
+  pub anchor_x: u16,
+  #[argh(option, short = 'v', default = "0", description = "vertical anchor")]
+  pub anchor_y: u16,
+  #[argh(option, long = "type", description = "image type")]
+  pub image_type: Option<u16>,
+  #[argh(option, long = "parts", default = "0", description = "number of parts")]
+  pub parts_count: u16,
 }

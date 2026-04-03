@@ -10,27 +10,26 @@ Rust CLI tools for translating games using NVS/FVP visual novel engine.
 
 ```
 Cargo.toml
-build.rs           -- Generates shell completions via clap_complete
-completions/       -- Generated shell completions
+build.rs           -- Windows resource embedding (icon, manifest)
 src/
-  main.rs          -- CLI entry point (clap derive), dispatch
-  cli.rs           -- CLI argument definitions (shared with build.rs)
+  main.rs          -- CLI entry point (argh), dispatch
+  cli.rs           -- CLI argument definitions
   lib.rs           -- Library re-exports (main.rs imports from lib crate)
   archive.rs       -- Packed archive ls, extract, get, pack, replace, validate
   nvsg.rs          -- NVSG image info, decode + encode
-  hcb.rs           -- HCB bytecode disasm + asm
+  hcb.rs           -- HCB bytecode disassembly/assembly
   utils/
     mod.rs         -- Utility module re-exports
     bitmap.rs      -- Pixel format conversions (BGR/RGB swap, grayscale, mask)
-    fs.rs          -- Filesystem helpers (walk_dir)
+    fs.rs          -- Filesystem helpers
     hzc1.rs        -- HZC1 zlib compression wrapper (decompress/compress)
     opcode.rs      -- HCB opcode definitions, encode/decode, mnemonics
     png.rs         -- PNG load/save
-    strings.rs     -- Strings file load/save (#include, #emit, comments)
+    strings.rs     -- Strings file load/save (#include, #emit, #reference, comments)
     text.rs        -- SJIS sort comparison for archive entry ordering
 tests/
   archive.rs       -- Archive pack/unpack/get/replace tests
-  hcb.rs           -- HCB disasm/asm roundtrip and string loading tests
+  hcb.rs           -- HCB disassembly/assembly roundtrip and string loading tests
   hzc1.rs          -- HZC1 decompression error handling tests
   nvsg.rs          -- NVSG decode/encode roundtrip tests
   fixtures/        -- Binary test fixtures (graph.bin, *.nvsg, *.hcb)
