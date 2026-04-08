@@ -10,7 +10,7 @@ This project was born as an experiment to learn and get familiar with current LL
 
 ## Installation
 
-```
+```bash
 cargo build --release
 ```
 
@@ -21,47 +21,47 @@ The binary is at `target/release/hime-tools` (or `hime-tools.exe` on Windows).
 ### Archives
 
 List files in a `.bin` archive:
-```
-hime-tools bin ls archive.bin
+```bash
+hime-tools bin ls <archive>
 ```
 
 Unpack all files from a `.bin` archive:
-```
-hime-tools bin unpack archive.bin output/
+```bash
+hime-tools bin unpack <archive> <dir>
 ```
 
 Extract a single file by name:
-```
-hime-tools bin get archive.bin filename [output]
+```bash
+hime-tools bin get <archive> <filename> [output]
 ```
 
 Pack a folder back into a `.bin` archive:
-```
-hime-tools bin pack input/ output.bin
+```bash
+hime-tools bin pack <dir> <archive>
 ```
 
 The pack command sorts entries case-insensitively to satisfy the engine's binary search. Filenames are encoded as Shift-JIS.
 
 Replace a single file in an archive without full unpack/repack:
-```
-hime-tools bin replace archive.bin filename replacement
+```bash
+hime-tools bin replace <archive> <filename> <replacement>
 ```
 
 Validate archive structure, data regions, and sort order:
-```
-hime-tools bin validate archive.bin
+```bash
+hime-tools bin validate <archive>
 ```
 
 ### Images
 
 Inspect NVSG image metadata without decompressing pixel data:
-```
-hime-tools nvsg info input.nvsg
+```bash
+hime-tools nvsg info <input>
 ```
 
 Decode an NVSG/HZC1 image to PNG:
-```
-hime-tools nvsg decode input.nvsg [output.png]
+```bash
+hime-tools nvsg decode <input> [output]
 ```
 
 If `output` is omitted, it defaults to the input path with a `.png` extension.
@@ -69,8 +69,8 @@ If `output` is omitted, it defaults to the input path with a `.png` extension.
 On decode, a re-encode hint is printed to stderr with all the header values you need to pass back.
 
 Encode a PNG to NVSG/HZC1:
-```
-hime-tools nvsg encode -x 100 -y 200 input.png output.nvsg
+```bash
+hime-tools nvsg encode -x 100 -y 200 <input> <output>
 ```
 
 Encode options:
@@ -78,9 +78,9 @@ Encode options:
 |------|-------------|---------|
 | `-x` | X offset | 0 |
 | `-y` | Y offset | 0 |
-| `-u` | Anchor X (u) | 0 |
-| `-v` | Anchor Y (v) | 0 |
-| `--type` | Force NVSG type (0–4) | auto-detect |
+| `-u` | Anchor X | 0 |
+| `-v` | Anchor Y | 0 |
+| `--type` | Force NVSG type (0-4) | auto-detect |
 | `--parts` | Number of parts, must be divisible by image height | 1 |
 
 #### Image types
@@ -96,8 +96,8 @@ Encode options:
 ### Bytecode
 
 Disassemble an HCB bytecode file:
-```
-hime-tools hcb disasm input.hcb output/
+```bash
+hime-tools hcb disasm <input> <dir>
 ```
 
 Produces three files in the output directory:
@@ -106,8 +106,8 @@ Produces three files in the output directory:
 - `config.yaml` — metadata (entry point, syscalls, game title, etc.)
 
 Assemble back to HCB:
-```
-hime-tools hcb asm input/ output.hcb
+```bash
+hime-tools hcb asm <dir> <output>
 ```
 
 Reads `{name}.asm`, `strings.txt`, and `config.yaml` from the input directory. Produces a byte-identical `.hcb` file.
@@ -124,7 +124,7 @@ The `strings.txt` file uses a simple flat text format:
 
 ## Testing
 
-```
+```bash
 cargo test
 cargo fmt --check
 cargo clippy

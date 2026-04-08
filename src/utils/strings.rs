@@ -5,12 +5,16 @@ use anyhow::{bail, Context, Result};
 use super::fs::{read_file_to_string, write_file};
 
 pub fn load(path: &Path) -> Result<Vec<String>> {
+  let canonical = path
+    .canonicalize()
+    .with_context(|| format!("resolving path '{}'", path.display()))?;
+  let root = canonical.parent().unwrap_or(Path::new(".")).to_path_buf();
   let mut strings = Vec::new();
-  load_inner(path, &mut strings, &mut Vec::new())?;
+  load_inner(&canonical, &root, &mut strings, &mut Vec::new())?;
   Ok(strings)
 }
 
-fn load_inner(path: &Path, strings: &mut Vec<String>, seen: &mut Vec<PathBuf>) -> Result<()> {
+fn load_inner(path: &Path, root: &Path, strings: &mut Vec<String>, seen: &mut Vec<PathBuf>) -> Result<()> {
   let canonical = path
     .canonicalize()
     .with_context(|| format!("resolving path '{}'", path.display()))?;
@@ -37,7 +41,13 @@ fn load_inner(path: &Path, strings: &mut Vec<String>, seen: &mut Vec<PathBuf>) -
     if let Some(rest) = line.strip_prefix("#include <") {
       if let Some(filename) = rest.strip_suffix('>') {
         let include_path = parent.join(filename);
-        load_inner(&include_path, strings, seen).with_context(|| format!("processing include <{}>", filename))?;
+        let resolved = include_path
+          .canonicalize()
+          .with_context(|| format!("resolving include path '{}'", include_path.display()))?;
+        if !resolved.starts_with(root) {
+          bail!("include path escapes project directory: '{}'", resolved.display());
+        }
+        load_inner(&resolved, root, strings, seen).with_context(|| format!("processing include <{}>", filename))?;
         continue;
       }
     }

@@ -1,0 +1,51 @@
+name: Build
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            artifact: x86_64-linux
+            paths: target/release/hime-tools
+          - os: windows-2022
+            artifact: x86_64-windows
+            paths: |
+              target/release/hime-tools.exe
+              target/release/hime_tools.pdb
+          - os: macos-15
+            artifact: arm64-macos
+            paths: |
+              target/release/hime-tools
+              target/release/hime-tools.dSYM
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Generate macOS debug symbols
+        if: runner.os == 'macOS'
+        run: dsymutil target/release/hime-tools
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: ${{ matrix.artifact }}-${{github.sha}}
+          path: ${{ matrix.paths }}

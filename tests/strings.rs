@@ -64,6 +64,25 @@ fn load_comments_and_blanks() {
 }
 
 #[test]
+fn load_reject_path_traversal() {
+  let dir = tempfile::tempdir().unwrap();
+  let parent = dir.path().parent().unwrap();
+  fs::write(parent.join("secret.txt"), "sensitive data").unwrap();
+  let path = dir.path().join("evil.txt");
+  fs::write(&path, "#include <../secret.txt>").unwrap();
+
+  let result = hime_tools::utils::strings::load(&path);
+  assert!(result.is_err());
+  let err = result.unwrap_err();
+  let chain: String = err.chain().map(|e| e.to_string()).collect::<Vec<_>>().join(": ");
+  assert!(
+    chain.contains("escapes project directory"),
+    "error should mention path traversal: {}",
+    chain
+  );
+}
+
+#[test]
 fn load_reference_skipped() {
   let tmp = tempfile::tempdir().unwrap();
   fs::write(
