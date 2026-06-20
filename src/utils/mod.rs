@@ -3,7 +3,6 @@ pub mod fs;
 pub mod hzc1;
 pub mod io;
 pub mod num;
-pub mod opcode;
 pub mod png;
 pub mod strings;
 pub mod text;

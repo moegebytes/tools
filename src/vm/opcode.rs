@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Opcode {
   Nop,
   InitStack,
@@ -44,28 +44,24 @@ pub enum Opcode {
   SetLe,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum IntEncoding {
   I8,
   I16,
   I32,
 }
 
+#[derive(Clone, Debug, PartialEq)]
 pub enum Operand {
   None,
   InitStack { arg_count: u8, local_count: u8 },
   Label(String),
   Address(u32),
-  SyscallName(String),
   String(Vec<u8>),
   Int(i32, IntEncoding),
   Float(f32),
   U16(u16),
   I8(i8),
-}
-
-pub struct ParsedInstruction {
-  pub opcode: Opcode,
-  pub operand: Operand,
 }
 
 pub fn decode_opcode(byte: u8) -> Result<Opcode> {

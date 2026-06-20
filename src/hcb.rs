@@ -9,8 +9,11 @@ use serde::{Deserialize, Serialize};
 use crate::utils::fs::{create_dir, read_file, read_file_to_string, write_file};
 use crate::utils::io::*;
 use crate::utils::num::parse_int;
-use crate::utils::opcode::*;
 use crate::utils::text::{decode_sjis, encode_sjis};
+use crate::vm::instruction::{self, Instruction};
+use crate::vm::opcode::*;
+use crate::vm::stack;
+use crate::vm::{CustomSyscall, Syscall};
 
 #[derive(Serialize, Deserialize)]
 struct ConfigSyscall {
@@ -38,17 +41,6 @@ struct Config {
   custom_syscalls: Vec<ConfigCustomSyscall>,
 }
 
-struct Syscall {
-  name: String,
-  args_count: i8,
-}
-
-struct CustomSyscall {
-  name: String,
-  args_count: i8,
-  address: u32,
-}
-
 struct Descriptor {
   entry_point: u32,
   volatile_global_count: i16,
@@ -57,6 +49,16 @@ struct Descriptor {
   title: String,
   syscalls: Vec<Syscall>,
   custom_syscalls: Vec<CustomSyscall>,
+}
+
+fn validate_syscall_signature(name: &str, args_count: i8) -> Result<()> {
+  if name == "ThreadStart" && args_count != 2 {
+    bail!(
+      "ThreadStart syscall must declare exactly 2 arguments, got {}",
+      args_count
+    );
+  }
+  Ok(())
 }
 
 fn parse_descriptor(data: &[u8]) -> Result<Descriptor> {
@@ -77,6 +79,7 @@ fn parse_descriptor(data: &[u8]) -> Result<Descriptor> {
     let args_count = read_i8(&mut cur)?;
     let name_len = read_u8(&mut cur)? as usize;
     let name = decode_sjis(&read_bytes(&mut cur, name_len)?);
+    validate_syscall_signature(&name, args_count)?;
     syscalls.push(Syscall { name, args_count });
   }
 
@@ -126,6 +129,7 @@ fn write_descriptor(desc: &Descriptor) -> Result<Vec<u8>> {
   }
   buf.extend_from_slice(&(desc.syscalls.len() as i16).to_le_bytes());
   for sc in &desc.syscalls {
+    validate_syscall_signature(&sc.name, sc.args_count)?;
     buf.push(sc.args_count as u8);
     let name_sjis = encode_sjis(&sc.name)?;
     if name_sjis.len() > 255 {
@@ -163,71 +167,62 @@ struct CodeTargets {
   thread_targets: BTreeMap<u32, u32>,
 }
 
-fn collect_code_targets(mut cur: Cursor<&[u8]>, desc: &Descriptor) -> Result<CodeTargets> {
+fn collect_code_targets(instructions: &[Instruction], desc: &Descriptor) -> Result<CodeTargets> {
   let mut functions = BTreeSet::new();
   let mut jump_targets = BTreeSet::new();
   let mut thread_targets = BTreeMap::new();
 
-  let mut thread_candidate: Option<(u32, u32)> = None;
-
-  let ts_idx = desc
-    .syscalls
-    .iter()
-    .position(|s| s.name == "ThreadStart")
-    .map(|i| i as u16);
-
-  while (cur.position() as usize) < cur.get_ref().len() {
-    let off = cur.position() as u32;
-    let op = decode_opcode(read_u8(&mut cur)?).with_context(|| format!("at offset 0x{:06X}", off))?;
-
-    match op {
-      Opcode::InitStack => {
-        functions.insert(off);
+  for instr in instructions {
+    match (&instr.opcode, &instr.operand) {
+      (Opcode::InitStack, _) => {
+        functions.insert(instr.offset);
       }
-      Opcode::Jmp | Opcode::Jz => {
-        jump_targets.insert(read_u32_le(&mut cur)?);
-        thread_candidate = None;
-        continue;
-      }
-      Opcode::PushIntI32 => {
-        thread_candidate = Some((off, read_u32_le(&mut cur)?));
-        continue;
-      }
-      Opcode::SysCall => {
-        if Some(read_u16_le(&mut cur)?) != ts_idx {
-          continue;
-        }
-
-        match thread_candidate {
-          Some((push_off, val)) => {
-            if functions.contains(&val) {
-              thread_targets.insert(push_off, val);
-            } else {
-              eprintln!(
-                "warning: ThreadStart at 0x{:06X} references 0x{:06X} which is not at beginning of function",
-                off, val
-              );
-            }
-          }
-          _ => eprintln!(
-            "warning: orphaned ThreadStart at 0x{:06X} is not preceded by push_int",
-            off
-          ),
-        }
-
-        thread_candidate = None;
-        continue;
-      }
-      Opcode::PushString => {
-        let len = read_u8(&mut cur)? as u64;
-        cur.set_position(cur.position() + len);
-        thread_candidate = None;
-        continue;
+      (Opcode::Jmp | Opcode::Jz, Operand::Address(addr)) => {
+        jump_targets.insert(*addr);
       }
       _ => {}
     }
-    cur.set_position(cur.position() + (opcode_size(op) - 1) as u64);
-    thread_candidate = None;
+  }
+
+  if let Some(thread_start_idx) = desc.syscalls.iter().position(|s| s.name == "ThreadStart") {
+    stack::emulate(
+      instructions,
+      &functions,
+      &desc.syscalls,
+      stack::ProblemMode::Warn,
+      |frame| {
+        if frame.instr.opcode != Opcode::SysCall {
+          return Ok(());
+        }
+
+        if frame.instr.operand != Operand::U16(thread_start_idx as u16)
+          || frame.stack.len() < desc.syscalls[thread_start_idx].args_count as usize
+        {
+          return Ok(());
+        }
+
+        let stack::StackValue::Int { value, producer } = &frame.stack[1] else {
+          eprintln!(
+            "warning: ThreadStart at 0x{:06X} does not have a known int32 address argument",
+            frame.instr.offset
+          );
+          return Ok(());
+        };
+
+        let target = *value as u32;
+        if functions.contains(&target) {
+          if let Some(producer) = producer {
+            thread_targets.insert(*producer, target);
+          }
+        } else {
+          eprintln!(
+            "warning: ThreadStart at 0x{:06X} references 0x{:06X} which is not at beginning of function",
+            frame.instr.offset, target
+          );
+        }
+        Ok(())
+      },
+    )?;
   }
 
   Ok(CodeTargets {
@@ -257,7 +252,8 @@ pub fn disasm(input: &Path, output_dir: &Path) -> Result<()> {
   let mut cur = Cursor::new(&data[..descriptor_offset]);
   cur.set_position(size_of::<u32>() as u64);
 
-  let targets = collect_code_targets(cur.clone(), &desc)?;
+  let instructions = instruction::from_bytecode(cur.clone())?;
+  let targets = collect_code_targets(&instructions, &desc)?;
 
   let code_size = cur.get_ref().len() - cur.position() as usize;
   println!("{} {}", "Title:".bold(), desc.title);
@@ -437,6 +433,9 @@ pub fn asm(input_dir: &Path, output: &Path) -> Result<()> {
   let config_path = input_dir.join("config.yaml");
   let config: Config = serde_yaml::from_str(&read_file_to_string(&config_path)?)
     .with_context(|| format!("parsing '{}'", config_path.display()))?;
+  for sc in &config.syscalls {
+    validate_syscall_signature(&sc.name, sc.args_count as i8)?;
+  }
 
   let strings_path = input_dir.join("strings.txt");
   let strings = if strings_path.exists() {
@@ -451,15 +450,14 @@ pub fn asm(input_dir: &Path, output: &Path) -> Result<()> {
     .unwrap_or_else(|| "output".to_string());
   let asm_text = read_file_to_string(&input_dir.join(format!("{}.asm", dir_name)))?;
 
-  let syscall_index: HashMap<&str, u16> = config
+  let syscalls: HashMap<&str, u16> = config
     .syscalls
     .iter()
     .enumerate()
     .map(|(i, sc)| (sc.name.as_str(), i as u16))
     .collect();
 
-  let mut instructions: Vec<ParsedInstruction> = Vec::new();
-  let mut instruction_offsets: Vec<u32> = Vec::new();
+  let mut instructions: Vec<Instruction> = Vec::new();
   let mut labels: HashMap<String, u32> = HashMap::new();
   let mut offset: u32 = size_of::<u32>() as u32;
 
@@ -496,7 +494,8 @@ pub fn asm(input_dir: &Path, output: &Path) -> Result<()> {
           .parse()
           .with_context(|| format!("line {}: invalid local_count on init_stack", line_num + 1))?;
         offset += opcode_size(op);
-        ParsedInstruction {
+        Instruction {
+          offset: instr_offset,
           opcode: op,
           operand: Operand::InitStack { arg_count, local_count },
         }
@@ -505,14 +504,16 @@ pub fn asm(input_dir: &Path, output: &Path) -> Result<()> {
         let operand = parts[1];
         offset += opcode_size(op);
         if let Some(label) = operand.strip_prefix("LABEL:") {
-          ParsedInstruction {
+          Instruction {
+            offset: instr_offset,
             opcode: op,
             operand: Operand::Label(label.to_string()),
           }
         } else {
           let addr: u32 =
             parse_int(operand).with_context(|| format!("line {}: invalid call target '{}'", line_num + 1, operand))?;
-          ParsedInstruction {
+          Instruction {
+            offset: instr_offset,
             opcode: op,
             operand: Operand::Address(addr),
           }
@@ -522,14 +523,16 @@ pub fn asm(input_dir: &Path, output: &Path) -> Result<()> {
         let operand = parts[1];
         offset += opcode_size(op);
         if let Some(label) = operand.strip_prefix("LABEL:") {
-          ParsedInstruction {
+          Instruction {
+            offset: instr_offset,
             opcode: op,
             operand: Operand::Label(label.to_string()),
           }
         } else {
           let addr: u32 =
             parse_int(operand).with_context(|| format!("line {}: invalid jump target '{}'", line_num + 1, operand))?;
-          ParsedInstruction {
+          Instruction {
+            offset: instr_offset,
             opcode: op,
             operand: Operand::Address(addr),
           }
@@ -537,20 +540,22 @@ pub fn asm(input_dir: &Path, output: &Path) -> Result<()> {
       }
       Opcode::SysCall => {
         let name = parts[1];
-        if !syscall_index.contains_key(name) {
-          bail!("line {}: unknown syscall '{}'", line_num + 1, name);
-        }
+        let index = *syscalls
+          .get(name)
+          .with_context(|| format!("line {}: unknown syscall '{}'", line_num + 1, name))?;
         offset += opcode_size(op);
-        ParsedInstruction {
+        Instruction {
+          offset: instr_offset,
           opcode: op,
-          operand: Operand::SyscallName(name.to_string()),
+          operand: Operand::U16(index),
         }
       }
       Opcode::PushIntI32 => {
         let operand = parts[1];
         if let Some(label) = operand.strip_prefix("LABEL:") {
           offset += opcode_size(Opcode::PushIntI32);
-          ParsedInstruction {
+          Instruction {
+            offset: instr_offset,
             opcode: Opcode::PushIntI32,
             operand: Operand::Label(label.to_string()),
           }
@@ -570,7 +575,8 @@ pub fn asm(input_dir: &Path, output: &Path) -> Result<()> {
             _ => IntEncoding::I32,
           };
           offset += opcode_size(actual_op);
-          ParsedInstruction {
+          Instruction {
+            offset: instr_offset,
             opcode: actual_op,
             operand: Operand::Int(val, encoding),
           }
@@ -581,7 +587,8 @@ pub fn asm(input_dir: &Path, output: &Path) -> Result<()> {
           .parse()
           .with_context(|| format!("line {}: invalid float {}", line_num + 1, parts[1]))?;
         offset += opcode_size(op);
-        ParsedInstruction {
+        Instruction {
+          offset: instr_offset,
           opcode: op,
           operand: Operand::Float(val),
         }
@@ -606,7 +613,8 @@ pub fn asm(input_dir: &Path, output: &Path) -> Result<()> {
         };
         let sjis = encode_sjis(text)?;
         offset += opcode_size(op) + sjis.len() as u32;
-        ParsedInstruction {
+        Instruction {
+          offset: instr_offset,
           opcode: op,
           operand: Operand::String(sjis),
         }
@@ -616,7 +624,8 @@ pub fn asm(input_dir: &Path, output: &Path) -> Result<()> {
           .parse()
           .with_context(|| format!("line {}: invalid u16 operand", line_num + 1))?;
         offset += opcode_size(op);
-        ParsedInstruction {
+        Instruction {
+          offset: instr_offset,
           opcode: op,
           operand: Operand::U16(val),
         }
@@ -626,55 +635,54 @@ pub fn asm(input_dir: &Path, output: &Path) -> Result<()> {
           .parse()
           .with_context(|| format!("line {}: invalid i8 operand", line_num + 1))?;
         offset += opcode_size(op);
-        ParsedInstruction {
+        Instruction {
+          offset: instr_offset,
           opcode: op,
           operand: Operand::I8(val),
         }
       }
       _ => {
         offset += opcode_size(op);
-        ParsedInstruction {
+        Instruction {
+          offset: instr_offset,
           opcode: op,
           operand: Operand::None,
         }
       }
     };
 
-    instruction_offsets.push(instr_offset);
     instructions.push(instr);
   }
 
-  let function_starts: BTreeSet<u32> = instructions
+  let functions: BTreeSet<u32> = instructions
     .iter()
-    .zip(instruction_offsets.iter())
-    .filter(|(instr, _)| matches!(instr.opcode, Opcode::InitStack))
-    .map(|(_, &off)| off)
+    .filter(|instr| matches!(instr.opcode, Opcode::InitStack))
+    .map(|instr| instr.offset)
     .collect();
 
-  let ts_idx = config.syscalls.iter().position(|s| s.name == "ThreadStart");
-
-  for (i, instr) in instructions.iter().enumerate() {
-    let off = instruction_offsets[i];
-    match (instr.opcode, &instr.operand) {
+  for instr in &mut instructions {
+    let off = instr.offset;
+    let resolved_operand = match (instr.opcode, &instr.operand) {
       (Opcode::Call, Operand::Label(name)) => {
         let target = *labels
           .get(name)
-          .with_context(|| format!("undefined label: '{}'", name))?;
-        if !function_starts.contains(&target) {
+          .with_context(|| format!("undefined label '{}'", name))?;
+        if !functions.contains(&target) {
           bail!(
             "call target '{}' (0x{:06X}) does not point at beginning of function",
             name,
             target
           );
         }
+        Some(Operand::Address(target))
       }
       (Opcode::Jmp | Opcode::Jz, Operand::Label(name)) => {
         let target = *labels
           .get(name)
-          .with_context(|| format!("undefined label: '{}'", name))?;
-        let jmp_func = function_starts.range(..=off).next_back();
-        let target_func = function_starts.range(..=target).next_back();
-        if function_starts.contains(&target) || jmp_func != target_func {
+          .with_context(|| format!("undefined label '{}'", name))?;
+        let jmp_func = functions.range(..=off).next_back();
+        let target_func = functions.range(..=target).next_back();
+        if functions.contains(&target) || jmp_func != target_func {
           bail!(
             "{} target '{}' (0x{:06X}) points at outside boundary of current function",
             opcode_mnemonic(instr.opcode),
@@ -682,38 +690,66 @@ pub fn asm(input_dir: &Path, output: &Path) -> Result<()> {
             target
           );
         }
+        Some(Operand::Address(target))
       }
-      _ => {}
-    }
-
-    if matches!(instr.opcode, Opcode::SysCall) && ts_idx.is_some() {
-      if let Operand::SyscallName(name) = &instr.operand {
-        if name == "ThreadStart" {
-          let mut j = i;
-          while j > 0 {
-            j -= 1;
-            match (instructions[j].opcode, &instructions[j].operand) {
-              (Opcode::PushIntI32, Operand::Label(label)) => {
-                let target = *labels
-                  .get(label)
-                  .with_context(|| format!("ThreadStart references unknown label '{}'", label))?;
-                if !function_starts.contains(&target) {
-                  bail!(
-                    "ThreadStart label '{}' (0x{:06X}) does not point at beginning of function",
-                    label,
-                    target
-                  );
-                }
-                break;
-              }
-              (Opcode::PushIntI32 | Opcode::PushIntI8 | Opcode::PushIntI16, _) => {}
-              _ => break,
-            }
-          }
-        }
+      (Opcode::PushIntI32, Operand::Label(name)) => {
+        let target = *labels
+          .get(name)
+          .with_context(|| format!("undefined label '{}'", name))?;
+        Some(Operand::Int(target as i32, IntEncoding::I32))
       }
+      _ => None,
+    };
+    if let Some(operand) = resolved_operand {
+      instr.operand = operand;
     }
   }
+
+  let syscalls: Vec<Syscall> = config
+    .syscalls
+    .iter()
+    .map(|sc| Syscall {
+      name: sc.name.clone(),
+      args_count: sc.args_count as i8,
+    })
+    .collect();
+
+  if let Some(thread_start_idx) = syscalls.iter().position(|s| s.name == "ThreadStart") {
+    stack::emulate(
+      &instructions,
+      &functions,
+      &syscalls,
+      stack::ProblemMode::Strict,
+      |frame| {
+        if frame.instr.opcode != Opcode::SysCall {
+          return Ok(());
+        }
+
+        if frame.instr.operand != Operand::U16(thread_start_idx as u16)
+          || frame.stack.len() < syscalls[thread_start_idx].args_count as usize
+        {
+          return Ok(());
+        }
+
+        let stack::StackValue::Int { value, .. } = &frame.stack[1] else {
+          bail!(
+            "ThreadStart at 0x{:06X} does not have a known int32 address argument",
+            frame.instr.offset
+          );
+        };
+
+        let target = *value as u32;
+        if !functions.contains(&target) {
+          bail!(
+            "ThreadStart at 0x{:06X} references 0x{:06X} which is not at beginning of function",
+            frame.instr.offset,
+            target
+          );
+        }
+        Ok(())
+      },
+    )?;
+  };
 
   let mut code = Vec::with_capacity(offset as usize);
 
@@ -726,17 +762,10 @@ pub fn asm(input_dir: &Path, output: &Path) -> Result<()> {
         code.push(*local_count);
       }
       Operand::Label(name) => {
-        let addr = labels
-          .get(name)
-          .with_context(|| format!("undefined label: '{}'", name))?;
-        code.extend_from_slice(&addr.to_le_bytes());
+        bail!("internal error: unresolved label '{}'", name);
       }
       Operand::Address(addr) => {
         code.extend_from_slice(&addr.to_le_bytes());
-      }
-      Operand::SyscallName(name) => {
-        let idx = syscall_index[name.as_str()];
-        code.extend_from_slice(&idx.to_le_bytes());
       }
       Operand::String(sjis) => {
         if sjis.len() > u8::MAX as usize {
@@ -813,26 +842,19 @@ pub fn asm(input_dir: &Path, output: &Path) -> Result<()> {
     non_volatile_global_count: config.non_volatile_global_count as i16,
     game_mode: config.game_mode as i8,
     title: config.game_title,
-    syscalls: config
-      .syscalls
-      .into_iter()
-      .map(|sc| Syscall {
-        name: sc.name,
-        args_count: sc.args_count as i8,
-      })
-      .collect(),
+    syscalls,
     custom_syscalls,
   };
   let descriptor_bytes = write_descriptor(&desc)?;
   let descriptor_offset = size_of::<u32>() + code.len();
 
-  let mut out_data = Vec::with_capacity(descriptor_offset + descriptor_bytes.len());
-  out_data.extend_from_slice(&(descriptor_offset as u32).to_le_bytes());
-  out_data.extend_from_slice(&code);
-  out_data.extend_from_slice(&descriptor_bytes);
+  let mut data = Vec::with_capacity(descriptor_offset + descriptor_bytes.len());
+  data.extend_from_slice(&(descriptor_offset as u32).to_le_bytes());
+  data.extend_from_slice(&code);
+  data.extend_from_slice(&descriptor_bytes);
 
-  write_file(output, &out_data)?;
-  eprintln!("wrote '{}' ({} bytes)", output.display(), out_data.len());
+  write_file(output, &data)?;
+  eprintln!("wrote '{}' ({} bytes)", output.display(), data.len());
 
   Ok(())
 }

@@ -29,6 +29,7 @@ jobs:
               target/release/hime-tools.dSYM
 
     runs-on: ${{ matrix.os }}
+    name: ${{ matrix.artifact }}
 
     steps:
       - name: Checkout repository
